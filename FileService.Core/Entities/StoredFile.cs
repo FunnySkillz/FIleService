@@ -1,8 +1,10 @@
-﻿public enum FileStatus { Pending, Uploaded, Deleted }
+﻿
+
+using FileService.Core.Enum;
 
 namespace FileService.Models
 {
-    public class StoredFiles
+    public class StoredFile
     {
         public Guid Id { get; set; }
         public string Key { get; set; } = default!;              // s3 object key
