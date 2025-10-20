@@ -36,6 +36,8 @@ builder.Services.AddScoped<IFileStorageService, S3FileStorageService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddAuthentication(/* your JWT/OIDC */);
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

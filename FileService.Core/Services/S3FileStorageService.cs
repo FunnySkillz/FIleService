@@ -35,8 +35,7 @@ namespace FileService.Core.Services
         public async Task<(Guid id, string key, Uri uploadUrl, DateTime expiresAtUtc)> InitUploadAsync(
             string ownerUserId, string fileName, string contentType, long? expectedSizeBytes, CancellationToken ct)
         {
-            if (string.IsNullOrWhiteSpace(fileName))
-                throw new ArgumentException("FileName required.", nameof(fileName));
+            if (string.IsNullOrWhiteSpace(fileName)) throw new ArgumentException("FileName required.", nameof(fileName));
 
             var safeName = SanitizeFileName(fileName);
             var id = Guid.NewGuid();
@@ -167,19 +166,5 @@ namespace FileService.Core.Services
             return string.IsNullOrWhiteSpace(safe) ? "file" : safe;
         }
 
-        public Task<(Guid id, Uri uploadUrl, string objectKey)> CreateForUploadAsync(string fileName, string contentType, long? expectedSizeBytes, string ownerUserId, CancellationToken ct = default)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task<StoredFile?> GetMetadataAsync(Guid id, string requesterUserId, CancellationToken ct = default)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task<IReadOnlyList<StoredFile>> ListAsync(string ownerUserId, int page = 1, int pageSize = 50, CancellationToken ct = default)
-        {
-            throw new NotImplementedException();
-        }
     }
 }
