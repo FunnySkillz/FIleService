@@ -1,5 +1,4 @@
 # AWS FileService (.NET 8 + S3 Pre-signed URLs)
-# AWS FileService (.NET 8 + S3 Pre-Signed URLs)
 
 A production-ready file service built with ASP.NET Core, EF Core, Repository + Unit of Work, and Amazon S3.
 The service stores **metadata in PostgreSQL** and file **blobs in S3**, using **direct browser uploads** via pre-signed URLs.
