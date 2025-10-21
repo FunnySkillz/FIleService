@@ -17,13 +17,13 @@ namespace FileService.Controllers
 
         public FilesController(IFileStorageService svc) => _svc = svc;
 
-        [HttpPost("PresignUpload")]
-        public async Task<ActionResult<InitUploadResponse>> InitUpload([FromBody] InitUploadRequest req, CancellationToken ct)
-        {
-            var userId = GetUserIdOrThrow();
-            var (id, key, url, expires) = await _svc.InitUploadAsync(userId, req.FileName, req.ContentType, req.ExpectedSizeBytes, ct);
-            return Ok(new InitUploadResponse { Id = id, Key = key, UploadUrl = url.ToString(), ExpiresAtUtc = expires });
-        }
+        //[HttpPost("PresignUpload")]
+        //public async Task<ActionResult<InitUploadResponse>> InitUpload([FromBody] InitUploadRequest req, CancellationToken ct)
+        //{
+        //    var userId = GetUserIdOrThrow();
+        //    var (id, key, url, expires) = await _svc.InitUploadAsync(userId, req.FileName, req.ContentType, req.ExpectedSizeBytes, ct);
+        //    return Ok(new InitUploadResponse { Id = id, Key = key, UploadUrl = url.ToString(), ExpiresAtUtc = expires });
+        //}
 
         [HttpPatch("{id:guid}/FinalizeUpload")]
         public async Task<IActionResult> Finalize(Guid id, CancellationToken ct)
@@ -33,14 +33,14 @@ namespace FileService.Controllers
             return ok ? NoContent() : NotFound();
         }
 
-        [HttpGet("GetAllFilesByUserId")]
-        public async Task<ActionResult<PagedResult<StoredFile>>> List([FromQuery] int page = 1, [FromQuery] int pageSize = 50,
-            [FromQuery] string? search = null, [FromQuery] string? contentType = null, CancellationToken ct = default)
-        {
-            var userId = GetUserIdOrThrow();
-            var result = await _svc.ListAsync(userId, page, pageSize, search, contentType, ct);
-            return Ok(result);
-        }
+        //[HttpGet("GetAllFilesByUserId")]
+        //public async Task<ActionResult<PagedResult<StoredFile>>> List([FromQuery] int page = 1, [FromQuery] int pageSize = 50,
+        //    [FromQuery] string? search = null, [FromQuery] string? contentType = null, CancellationToken ct = default)
+        //{
+        //    var userId = GetUserIdOrThrow();
+        //    var result = await _svc.ListAsync(userId, page, pageSize, search, contentType, ct);
+        //    return Ok(result);
+        //}
 
         [HttpGet("GetFileById/{id:guid}")]
         public async Task<ActionResult<StoredFile>> Get(Guid id, CancellationToken ct)
