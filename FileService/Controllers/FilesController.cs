@@ -17,7 +17,7 @@ namespace FileService.Controllers
 
         public FilesController(IFileStorageService svc) => _svc = svc;
 
-        [HttpPost("init-upload")]
+        [HttpPost("PresignUpload")]
         public async Task<ActionResult<InitUploadResponse>> InitUpload([FromBody] InitUploadRequest req, CancellationToken ct)
         {
             var userId = GetUserIdOrThrow();
@@ -25,7 +25,7 @@ namespace FileService.Controllers
             return Ok(new InitUploadResponse { Id = id, Key = key, UploadUrl = url.ToString(), ExpiresAtUtc = expires });
         }
 
-        [HttpPatch("{id:guid}/finalize")]
+        [HttpPatch("{id:guid}/FinalizeUpload")]
         public async Task<IActionResult> Finalize(Guid id, CancellationToken ct)
         {
             var userId = GetUserIdOrThrow();
@@ -33,7 +33,7 @@ namespace FileService.Controllers
             return ok ? NoContent() : NotFound();
         }
 
-        [HttpGet]
+        [HttpGet("GetAllFilesByUserId")]
         public async Task<ActionResult<PagedResult<StoredFile>>> List([FromQuery] int page = 1, [FromQuery] int pageSize = 50,
             [FromQuery] string? search = null, [FromQuery] string? contentType = null, CancellationToken ct = default)
         {
@@ -42,7 +42,7 @@ namespace FileService.Controllers
             return Ok(result);
         }
 
-        [HttpGet("{id:guid}")]
+        [HttpGet("GetFileById/{id:guid}")]
         public async Task<ActionResult<StoredFile>> Get(Guid id, CancellationToken ct)
         {
             var userId = GetUserIdOrThrow();
@@ -50,7 +50,7 @@ namespace FileService.Controllers
             return file is null ? NotFound() : Ok(file);
         }
 
-        [HttpPatch("{id:guid}")]
+        [HttpPatch("UpdateFileMetadata/{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateFileRequest req, CancellationToken ct)
         {
             var userId = GetUserIdOrThrow();
@@ -58,7 +58,7 @@ namespace FileService.Controllers
             return ok ? NoContent() : NotFound();
         }
 
-        [HttpDelete("{id:guid}")]
+        [HttpDelete("DeleteFileById/{id:guid}")]
         public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
         {
             var userId = GetUserIdOrThrow();
@@ -66,7 +66,7 @@ namespace FileService.Controllers
             return ok ? NoContent() : NotFound();
         }
 
-        [HttpGet("{id:guid}/download-url")]
+        [HttpGet("PresignDownloadUrl/{id:guid}")]
         public async Task<IActionResult> GetDownloadUrl(Guid id, CancellationToken ct)
         {
             var userId = GetUserIdOrThrow();
@@ -77,7 +77,7 @@ namespace FileService.Controllers
         private string GetUserIdOrThrow()
         {
             // Adjust to auth: "sub" for OIDC/JWT; or map to app's user id.
-            var sub = User.FindFirst("sub")?.Value;
+            var sub = User.FindFirst("JWT")?.Value;
             if (string.IsNullOrEmpty(sub)) throw new UnauthorizedAccessException("No user id (sub) in token.");
             return sub;
         }

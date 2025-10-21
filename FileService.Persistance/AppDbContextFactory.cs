@@ -20,7 +20,7 @@ namespace FileService.Persistance
                 .Build();
 
             var cs = config.GetConnectionString("Default")
-                     ?? "Host=localhost;Database=filesvc;Username=postgres;Password=postgres";
+                     ?? "Host=localhost;Database=filesvc;Username=postgres;Password=password123";
 
             var opts = new DbContextOptionsBuilder<AppDbContext>()
                 .UseNpgsql(cs)
