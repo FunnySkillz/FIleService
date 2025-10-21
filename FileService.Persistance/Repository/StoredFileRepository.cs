@@ -14,16 +14,6 @@ namespace FileService.Persistance.Repository
     {
         public StoredFileRepository(AppDbContext db) : base(db) { }
 
-        [Obsolete("Use tenant-based methods (GetByIdForTenantAsync / ListPagedAsync with tenantId).")]
-        public async Task<StoredFile?> GetByIdForOwnerAsync(Guid id, string ownerUserId, CancellationToken ct = default)
-            => await _dbContext.StoredFiles.AsNoTracking()
-                .FirstOrDefaultAsync(f => f.Id == id && f.OwnerUserId == ownerUserId, ct);
-
-        [Obsolete("Use tenant-based methods (GetByIdForTenantAsync / ListPagedAsync with tenantId).")]
-        public async Task<StoredFile?> GetByIdNotDeletedForOwnerAsync(Guid id, string ownerUserId, CancellationToken ct = default)
-            => await _dbContext.StoredFiles
-                .FirstOrDefaultAsync(f => f.Id == id && f.OwnerUserId == ownerUserId && f.Status != FileStatus.Deleted, ct);
-
         public async Task<int> CountAsync(
             string tenantId, string? ownerType, string? ownerId, string? category,
             string? search, string? contentType, CancellationToken ct = default)
