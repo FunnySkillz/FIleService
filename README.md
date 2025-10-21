@@ -1,52 +1,168 @@
-# AWS FileService (.NET 8 + S3 Pre-signed URLs)
+# AWS FileService (.NET 8 + S3 Pre-Signed URLs)
 
-A production-ready file service built with ASP.NET Core, EF Core, Repository + Unit of Work, and Amazon S3.
-The service stores **metadata in PostgreSQL** and file **blobs in S3**, using **direct browser uploads** via pre-signed URLs.
+A production-ready, **multi-tenant** file service built with ASP.NET Core, EF Core (Repository + UoW), and Amazon S3.
+Files are uploaded/downloaded via **pre-signed URLs** (the API never streams file bytes). Metadata lives in **PostgreSQL**.
 
 ---
 
 ## Features
 
-* Direct upload/download via **S3 pre-signed URLs** (API never streams the bytes)
-* Private S3 bucket, server-side encryption, short URL TTLs
-* CRUD for file metadata (rename, describe, list, delete)
-* Optional **finalize** step (server verifies uploaded object and records size)
-* Repository Pattern + **Unit of Work**
-* Pagination + search (PostgreSQL `ILIKE`) with optional `pg_trgm` acceleration
-* Swagger/OpenAPI enabled
+* **Direct browser uploads/downloads** via S3 **pre-signed** PUT/GET (short TTLs)
+* **Private** S3 bucket with server-side encryption (SSE)
+* **Multi-tenant** model (`tenantId`) with tenant-first S3 key layout
+* **Owner context**: `ownerType` (`"user"` | `"tenant"`) + `ownerId` + optional `category`
+* **Metadata (jsonb)** for arbitrary key/values
+* **Auditing**: `createdByUserId` (nullable), timestamps, soft delete
+* **Search & paging** with Postgres `ILIKE` and optional trigram indexes
+* **Repository + Unit of Work** pattern
+* **Keycloak** JWT auth (SameTenant policy + simple owner guard)
+* Swagger/OpenAPI
 
 ---
 
 ## Architecture
 
-* **API:** ASP.NET Core Web API
-* **Storage:** Amazon S3 (private bucket)
-* **DB:** PostgreSQL via EF Core
-* **Security:** AuthZ check per owner; pre-signed URLs with short TTL
-* **Upload flow:** Client → API (`init-upload`) → Client PUTs to S3 → Client → API (`finalize`)
+**API layer**
+
+* ASP.NET Core Web API
+* Keycloak JWT Bearer auth
+* Controllers:
+
+  * `TenantFilesController` (primary) under `/api/tenants/{tenantId}/files/*`
+  * (Optional/legacy) `FilesController` under `/api/files/*` (deprecated)
+
+**Domain / Core**
+
+* `StoredFile` entity holds metadata only (S3 key, names, content type, size, ownership, auditing)
+* DTOs (`InitUploadRequest`, `InitUploadResponse`, `PagedResult<T>`, etc.)
+* `IFileStorageService` orchestrates S3 pre-signing & metadata persistence
+
+**Persistence**
+
+* PostgreSQL via EF Core
+* `AppDbContext`, repositories (`StoredFileRepository`), `UnitOfWork`
+* JSON metadata stored as **jsonb**
+* Useful indexes for listing & singleton constraints
+
+**Storage**
+
+* Amazon S3 private bucket
+* Tenant-first key convention:
+
+  ```
+  tenants/{tenantId}/users/{ownerId}/{fileId}/{fileName}     // ownerType=user
+  tenants/{tenantId}/tenant/{tenantId}/{fileId}/{fileName}   // ownerType=tenant
+  ```
+
+**AuthN/Z**
+
+* Keycloak (OIDC) for tokens
+* Policy `SameTenant`: route `{tenantId}` must match token claim
+* Owner guard: if `ownerType == "user"`, only that `ownerId == sub` may access (TenantAdmin bypass)
 
 ---
 
-## Requirements
+## Data Model
 
-* .NET 8 SDK
-* PostgreSQL 13+ (local or cloud)
-* AWS account & S3 bucket
-* AWS credentials available to the app (environment variables or IAM role)
+```csharp
+StoredFile {
+  Guid Id;
+  string TenantId;                // partition (company/realm)
+  string OwnerType;               // "user" | "tenant"
+  string OwnerId;                 // userId or tenantId (for company assets)
+  string? Category;               // e.g., "profile","branding","contracts"
 
----
+  string Key;                     // S3 object key
+  string FileName;
+  string ContentType;
+  long   SizeBytes;
 
-## Quick Start
+  string? CreatedByUserId;        // uploader (nullable for system/integration jobs)
+  Dictionary<string, object>? Metadata; // jsonb
 
-### 1) Clone & restore
-
-```bash
-git clone <your-repo-url>
-cd <repo-root>
-dotnet restore
+  FileStatus Status;              // Pending / Uploaded / Deleted
+  DateTime CreatedAtUtc;
+  DateTime? UploadedAtUtc;
+  DateTime? UpdatedAtUtc;
+  DateTime? DeletedAtUtc;
+}
 ```
 
-### 2) Configure `appsettings.json`
+**Indexes**
+
+* Listing hot path: `(TenantId, OwnerType, OwnerId, Status, CreatedAtUtc)`
+* Optional singleton (e.g., one logo/profile per owner), excluding deleted:
+
+  * Unique on `(TenantId, OwnerType, OwnerId, Category)` with filter `Status <> Deleted`
+
+---
+
+## API Endpoints (tenant-explicit)
+
+**Base:** `/api/tenants/{tenantId}/files`
+
+* `POST  PresignUpload`
+  Request:
+
+  ```json
+  {
+    "fileName": "avatar.jpg",
+    "contentType": "image/jpeg",
+    "expectedSizeBytes": 524288,
+    "ownerType": "user",
+    "ownerId": "USER123",
+    "category": "profile",
+    "metadata": { "source": "web" }
+  }
+  ```
+
+  Response:
+
+  ```json
+  {
+    "id": "GUID",
+    "key": "tenants/.../GUID/avatar.jpg",
+    "uploadUrl": "https://s3...PUT...X-Amz-Signature=...",
+    "expiresAtUtc": "2025-01-01T12:00:00Z"
+  }
+  ```
+
+* `PATCH {id}/FinalizeUpload` → `204 No Content`
+  (Server verifies object exists via `GetObjectMetadata`, records size, sets `UploadedAtUtc`.)
+
+* `GET   GetFiles?ownerType=&ownerId=&category=&page=&pageSize=&search=&contentType=`
+  Returns `PagedResult<StoredFile>`.
+
+* `GET   GetFileById/{id}` → `StoredFile`
+
+* `PATCH UpdateFileMetadata/{id}`
+  Body: `{ "newFileName": "NewName.pdf", "description": "optional" }`
+
+* `DELETE DeleteFileById/{id}` → soft delete in DB + delete object in S3
+
+* `GET   PresignDownloadUrl/{id}` → `{ "url": "https://s3...GET...X-Amz-Signature=..." }`
+
+> **Deprecated** legacy routes under `/api/files/*` still exist optionally; see mapping below.
+
+---
+
+## Auth (Keycloak)
+
+* Configure JWT Bearer with:
+
+  * `Authority`: `https://keycloak.example.com/realms/<Realm>`
+  * `Audience`: `file-service-api` (Keycloak client for this API)
+* Map roles from Keycloak (`realm_access.roles` / `resource_access[client].roles`) so `User.IsInRole("TenantAdmin")` works.
+* **Policies**
+
+  * `SameTenant`: route `{tenantId}` must equal token claim (`tenant` or similar).
+  * Owner guard inside controller: if `ownerType == "user"`, `ownerId` must equal `sub` unless role `TenantAdmin`.
+
+---
+
+## Configuration
+
+`appsettings.json`
 
 ```json
 {
@@ -55,36 +171,24 @@ dotnet restore
     "S3": { "BucketName": "your-private-bucket" },
     "Presign": { "UploadExpirySeconds": 600, "DownloadExpirySeconds": 300 }
   },
+  "Authentication": {
+    "Authority": "https://keycloak.example.com/realms/YourRealm",
+    "Audience": "file-service-api",
+    "RequireHttps": true
+  },
   "ConnectionStrings": {
     "Default": "Host=localhost;Database=filesvc;Username=postgres;Password=postgres"
   }
 }
 ```
 
-> Credentials are **not** stored here. Provide them via env vars or IAM:
->
-> * `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and optionally `AWS_SESSION_TOKEN`)
-> * or run inside AWS with an instance/task role.
+**Do not** commit AWS credentials. Provide via env vars (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, …) or run with an IAM role.
 
-### 3) Database setup
+---
 
-Install EF packages (already included in the project; if not):
+## S3 CORS (browser uploads)
 
-```bash
-dotnet add <PersistenceProject> package Npgsql.EntityFrameworkCore.PostgreSQL --version 8.*
-dotnet add <ApiProject> package Microsoft.EntityFrameworkCore.Design --version 8.*
-```
-
-Create & apply initial migration:
-
-```bash
-dotnet ef migrations add InitialCreate -p FileService.Persistance -s FileService.Api
-dotnet ef database update -p FileService.Persistance -s FileService.Api
-```
-
-### 4) AWS S3 bucket CORS
-
-Set CORS on your bucket (adapt origin):
+Example (adapt origin):
 
 ```xml
 <CORSConfiguration>
@@ -99,32 +203,28 @@ Set CORS on your bucket (adapt origin):
 </CORSConfiguration>
 ```
 
-### 5) IAM permissions (execution role/user)
+---
 
-Least-privilege example (adjust bucket name):
+## IAM policy (least privilege)
+
+Adjust bucket name:
 
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
-    { "Effect": "Allow",
-      "Action": ["s3:PutObject","s3:GetObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListBucket","s3:GetBucketLocation"],
-      "Resource": [
-        "arn:aws:s3:::your-private-bucket",
-        "arn:aws:s3:::your-private-bucket/*"
-      ]
-    }
-  ]
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:PutObject","s3:GetObject","s3:DeleteObject",
+      "s3:AbortMultipartUpload","s3:ListBucket","s3:GetBucketLocation"
+    ],
+    "Resource": [
+      "arn:aws:s3:::your-private-bucket",
+      "arn:aws:s3:::your-private-bucket/*"
+    ]
+  }]
 }
 ```
-
-### 6) Run
-
-```bash
-dotnet run --project FileService.Api
-```
-
-Open Swagger at `https://localhost:5001/swagger` (or the shown port).
 
 ---
 
@@ -133,206 +233,135 @@ Open Swagger at `https://localhost:5001/swagger` (or the shown port).
 ```
 /FileService.Api
   Program.cs
-  Controllers/FilesController.cs
+  Controllers/TenantFilesController.cs          # primary (tenant routes)
+  Controllers/FilesController.cs (deprecated)   # optional, legacy
 
 /FileService.Core
-  DTO/ (InitUploadRequest, InitUploadResponse, PagedResult, etc.)
   Contracts/IFileStorageService.cs
-  Options/AwsOptions.cs
+  DTO/InitUploadRequest.cs, InitUploadResponse.cs, PagedResult.cs, UpdateFileRequest.cs
   Entities/StoredFile.cs
   Enums/FileStatus.cs
+  Options/AwsOptions.cs
 
 /FileService.Persistance
   AppDbContext.cs
-  Abstractions/ (IRepository, IStoredFileRepository, IUnitOfWork)
+  Abstractions/ (IRepository, IUnitOfWork)
   Repository/ (EfRepository, StoredFileRepository, UnitOfWork)
-  Migrations/ (EF Core)
-  
+  Migrations/
+
 /FileService.Core.Services
   S3FileStorageService.cs
 ```
 
 ---
 
-## Dependency Injection (excerpt)
+## Setup & Migrations
 
-```csharp
-// Program.cs (API)
-builder.Services.Configure<AwsOptions>(builder.Configuration.GetSection("Aws"));
+Install tools (once):
 
-builder.Services.AddDbContext<AppDbContext>(opt =>
-    opt.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
-
-builder.Services.AddSingleton<IAmazonS3>(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<AwsOptions>>().Value;
-    return new AmazonS3Client(RegionEndpoint.GetBySystemName(opts.Region));
-});
-
-builder.Services.AddScoped<IStoredFileRepository, StoredFileRepository>();
-builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
-builder.Services.AddScoped<IFileStorageService, S3FileStorageService>();
+```bash
+dotnet tool update -g dotnet-ef
 ```
 
----
+Create/apply migrations:
 
-## Endpoints
+```bash
+# initial
+dotnet ef migrations add InitialCreate -p FileService.Persistance -s FileService.Api
+dotnet ef database update -p FileService.Persistance -s FileService.Api
 
-### Initialize upload (Create)
-
-`POST /api/files/init-upload`
-
-Request:
-
-```json
-{ "fileName": "report.pdf", "contentType": "application/pdf", "expectedSizeBytes": 5242880 }
+# after tenant/owner/metadata changes
+dotnet ef migrations add AddTenantOwnerMetadata -p FileService.Persistance -s FileService.Api
+dotnet ef database update -p FileService.Persistance -s FileService.Api
 ```
 
-Response:
+**Optional search acceleration (Postgres):**
 
-```json
-{
-  "id": "GUID",
-  "key": "users/<userId>/<GUID>/report.pdf",
-  "uploadUrl": "https://s3...X-Amz-Signature=...",
-  "expiresAtUtc": "2025-01-01T12:00:00Z"
-}
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS ix_storedfiles_filename_trgm
+  ON "StoredFiles" USING gin ("FileName" gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS ix_storedfiles_description_trgm
+  ON "StoredFiles" USING gin ("Description" gin_trgm_ops);
 ```
-
-### Finalize
-
-`PATCH /api/files/{id}/finalize` → `204 No Content`
-
-### Get metadata (Read one)
-
-`GET /api/files/{id}` → `StoredFile`
-
-### List (Read many)
-
-`GET /api/files?page=1&pageSize=50&search=&contentType=`
-
-Returns `PagedResult<StoredFile>`:
-
-```json
-{ "items": [ ... ], "page": 1, "pageSize": 50, "total": 123 }
-```
-
-### Update metadata
-
-`PATCH /api/files/{id}`
-Request:
-
-```json
-{ "newFileName": "Q4_report.pdf", "description": "Final" }
-```
-
-### Delete
-
-`DELETE /api/files/{id}` → soft-delete + S3 delete
-
-### Download URL
-
-`GET /api/files/{id}/download-url` → `{ "url": "https://s3...GET..." }`
 
 ---
 
 ## Frontend Upload Flow (example)
 
 ```ts
-// 1) Ask API for a pre-signed PUT
-const r = await fetch("/api/files/init-upload", {
+// 1) ask API for a pre-signed PUT
+const r = await fetch(`/api/tenants/${tenantId}/files/PresignUpload`, {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ fileName: file.name, contentType: file.type, expectedSizeBytes: file.size })
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`
+  },
+  body: JSON.stringify({
+    fileName: file.name,
+    contentType: file.type,
+    expectedSizeBytes: file.size,
+    ownerType: "user",
+    ownerId: userId,
+    category: "profile",
+    metadata: { source: "web" }
+  })
 });
 const { id, uploadUrl } = await r.json();
 
-// 2) Upload directly to S3
-await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+// 2) upload directly to S3 (Content-Type must match presign)
+await fetch(uploadUrl, {
+  method: "PUT",
+  headers: { "Content-Type": file.type },
+  body: file
+});
 
-// 3) Finalize
-await fetch(`/api/files/${id}/finalize`, { method: "PATCH" });
+// 3) finalize
+await fetch(`/api/tenants/${tenantId}/files/${id}/FinalizeUpload`, {
+  method: "PATCH",
+  headers: { "Authorization": `Bearer ${token}` }
+});
 ```
 
 ---
 
 ## Security Checklist
 
-* S3 **bucket is private** (no public ACLs)
-* Pre-signed URL TTLs: **5–10 minutes**
-* **Validate** filename, MIME type, and (optionally) expected size before issuing URLs
-* Server-side encryption: `AES256` or KMS (enforce via headers or bucket policy)
-* Rate-limit `init-upload` to prevent abuse
-* Log/audit: user, object key, and issued URL timestamps
-* AuthZ: only owner (or admin) may read/download/delete
-
----
-
-## PostgreSQL Search Performance
-
-For case-insensitive contains on large tables:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
-CREATE INDEX IF NOT EXISTS ix_storedfiles_filename_trgm
-ON "StoredFiles" USING gin ("FileName" gin_trgm_ops);
-
-CREATE INDEX IF NOT EXISTS ix_storedfiles_description_trgm
-ON "StoredFiles" USING gin ("Description" gin_trgm_ops);
-```
-
-In queries use:
-
-```csharp
-var pattern = $"%{search}%";
-q = q.Where(f => EF.Functions.ILike(f.FileName, pattern) ||
-                 EF.Functions.ILike(f.Description ?? string.Empty, pattern));
-```
+* S3 **Block Public Access** ON, ACLs disabled (Object Ownership: Bucket owner enforced)
+* **SSE** enabled (AES256 or KMS)
+* Short presigned TTLs (e.g., 5–10 min)
+* Validate filename / MIME allowlist / optional max size before presigning
+* Rate-limit `PresignUpload`
+* Authorization: `SameTenant` + owner guard; `TenantAdmin` bypass
+* Log audit events (upload/finalize/delete); consider a dedicated audit table
 
 ---
 
 ## Troubleshooting
 
-* **`UseNpgsql` not found**
-  Install provider where `AppDbContext` compiles and add:
-
-  ```csharp
-  using Microsoft.EntityFrameworkCore;
-  ```
-
-  ```
-  dotnet add FileService.Persistance package Npgsql.EntityFrameworkCore.PostgreSQL --version 8.*
-  ```
-
-* **`EF.Functions.ILike` not found**
-  Add:
-
-  ```csharp
-  using Npgsql.EntityFrameworkCore.PostgreSQL;
-  ```
-
-  Ensure queries run against a PostgreSQL provider (not in-memory).
-
-* **S3 CORS errors**:
-  Verify bucket CORS allows your origin and `PUT/GET`.
-
-* **403 on upload**:
-  Check that the `Content-Type` header on the PUT **matches** what you used when signing the URL.
-  Verify IAM policy and bucket region.
+* **403 SignatureDoesNotMatch** on PUT → The `Content-Type` header used for PUT **must** equal the one used when signing.
+* **CORS error** in browser → Bucket CORS must allow your origin + methods `PUT, GET`; expose `ETag`.
+* **`EF.Functions.ILike` not found** → Ensure Npgsql EF provider is installed & `using Npgsql.EntityFrameworkCore.PostgreSQL;`.
+* **Design-time DbContext errors** → Add `IDesignTimeDbContextFactory<AppDbContext>` to Persistence and load `ConnectionStrings:Default` from appsettings/env.
 
 ---
 
-## Roadmap / TODO
+## Deprecated (migration guide)
+
+Legacy routes under `/api/files/*` are deprecated. Use tenant-scoped routes:
+
+| Old                                | New                                                           |
+| ---------------------------------- | ------------------------------------------------------------- |
+| `POST /api/files/init-upload`      | `POST /api/tenants/{tenantId}/files/PresignUpload`            |
+
+---
+
+## Roadmap
 
 * Multipart uploads (pre-sign each part) for very large files
-* Virus scanning / quarantine (Lambda + SQS) after upload
-* Admin access policies & cross-tenant support
-* Object versioning + retention policies
-* Optional CDN (CloudFront) for downloads
 
 ---
 
 ## License
 
-MIT (or your preferred license). Add a `LICENSE` file if publishing publicly.
+MIT (or your preferred license).
